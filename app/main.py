@@ -7,7 +7,7 @@ import time
 from io import BytesIO
 from typing import Optional
 
-app = FastAPI(title="Zoho Dependency Mapping Tool")
+app = FastAPI(title="Field Dependence Mapping Tool")
 
 # =====================================================
 # GLOBAL VARIABLES
