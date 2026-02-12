@@ -1,38 +1,59 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
 import pandas as pd
 import requests
-import os
-import json
+import time
 from io import BytesIO
 from typing import Optional
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Zoho Dependency Mapping Tool")
 
 # =====================================================
-# CONFIGURATION
+# GLOBAL VARIABLES
 # =====================================================
+ZOHO_ORG_ID: Optional[str] = None
+OAUTH_CLIENT_ID: Optional[str] = None
+OAUTH_CLIENT_SECRET: Optional[str] = None
+REDIRECT_URI: Optional[str] = None
+REFRESH_TOKEN: Optional[str] = None
+TOKENS = {}  # {"access_token": str, "expires_at": float, "authorization_code": str}
 
-ZOHO_BASE_URL = "https://desk.zoho.com/api/v1"
-ZOHO_ORG_ID = os.getenv("ZOHO_ORG_ID")
-ZOHO_ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+# =====================================================
+# HELPER FUNCTION TO GET ACCESS TOKEN
+# =====================================================
+def get_access_token():
+    if not TOKENS.get("access_token") or time.time() > TOKENS.get("expires_at", 0):
+        if REFRESH_TOKEN:
+            # Use refresh token to get a new access token
+            token_url = "https://accounts.zoho.com/oauth/v2/token"
+            params = {
+                "refresh_token": REFRESH_TOKEN,
+                "client_id": OAUTH_CLIENT_ID,
+                "client_secret": OAUTH_CLIENT_SECRET,
+                "grant_type": "refresh_token"
+            }
+            r = requests.post(token_url, params=params)
+            if r.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Failed to get access token: {r.text}")
+            data = r.json()
+            TOKENS["access_token"] = data["access_token"]
+            TOKENS["expires_at"] = time.time() + data["expires_in"] - 60
+        else:
+            raise HTTPException(status_code=400, detail="No refresh token available, generate tokens first")
+    return TOKENS["access_token"]
 
-if not ZOHO_ORG_ID or not ZOHO_ACCESS_TOKEN:
-    raise Exception(
-        "Environment variables ZOHO_ORG_ID and ZOHO_ACCESS_TOKEN must be set."
-    )
-
-HEADERS = {
-    "orgId": ZOHO_ORG_ID,
-    "Authorization": f"Zoho-oauthtoken {ZOHO_ACCESS_TOKEN}",
-    "Content-Type": "application/json"
-}
+def get_headers():
+    token = get_access_token()
+    return {
+        "orgId": ZOHO_ORG_ID,
+        "Authorization": f"Zoho-oauthtoken {token}",
+        "Content-Type": "application/json"
+    }
 
 # =====================================================
 # CUSTOM SWAGGER UI WITH FOOTER
 # =====================================================
-
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
     swagger_ui = get_swagger_ui_html(
@@ -64,9 +85,102 @@ async def custom_swagger_ui_html():
     return HTMLResponse(content=html_content)
 
 # =====================================================
+# SET CREDENTIALS FORM (Org + Client Info)
+# =====================================================
+@app.get("/set_credentials", include_in_schema=False)
+def set_credentials_form():
+    html_content = """
+    <html>
+      <body>
+        <h2>Enter Zoho Credentials</h2>
+        <form action="/set_credentials" method="post">
+          <label>Org ID:</label>
+          <input type="text" name="org_id" required><br><br>
+          <label>Client ID:</label>
+          <input type="text" name="client_id" required><br><br>
+          <label>Client Secret:</label>
+          <input type="text" name="client_secret" required><br><br>
+          <label>Redirect URI:</label>
+          <input type="text" name="redirect_uri" required><br><br>
+          <input type="submit" value="Submit">
+        </form>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+@app.post("/set_credentials")
+def set_credentials(
+    org_id: str = Form(...),
+    client_id: str = Form(...),
+    client_secret: str = Form(...),
+    redirect_uri: str = Form(...)
+):
+    global ZOHO_ORG_ID, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, REDIRECT_URI
+    ZOHO_ORG_ID = org_id
+    OAUTH_CLIENT_ID = client_id
+    OAUTH_CLIENT_SECRET = client_secret
+    REDIRECT_URI = redirect_uri
+
+    # Provide a link to start OAuth Authorization
+    auth_url = (
+        f"https://accounts.zoho.com/oauth/v2/auth"
+        f"?scope=Desk.tickets.READ,Desk.basic.READ&client_id={client_id}"
+        f"&response_type=code&redirect_uri={redirect_uri}&access_type=offline"
+    )
+    return HTMLResponse(f"""
+    <html>
+      <body>
+        <h2>Credentials Saved!</h2>
+        <p>Click the link below to authorize and generate tokens:</p>
+        <a href="{auth_url}" target="_blank">Authorize Zoho</a>
+      </body>
+    </html>
+    """)
+
+# =====================================================
+# OAUTH CALLBACK
+# =====================================================
+@app.get("/oauth_callback")
+def oauth_callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
+    global REFRESH_TOKEN, TOKENS
+    if error:
+        return {"error": error}
+    if not code:
+        return {"error": "Authorization code not received"}
+
+    # Exchange authorization code for tokens
+    token_url = "https://accounts.zoho.com/oauth/v2/token"
+    params = {
+        "code": code,
+        "client_id": OAUTH_CLIENT_ID,
+        "client_secret": OAUTH_CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code"
+    }
+    r = requests.post(token_url, params=params)
+    if r.status_code != 200:
+        return {"error": "Failed to get tokens", "details": r.text}
+
+    data = r.json()
+    TOKENS["access_token"] = data["access_token"]
+    TOKENS["expires_at"] = time.time() + data["expires_in"] - 60
+    REFRESH_TOKEN = data.get("refresh_token")
+
+    return HTMLResponse(f"""
+    <html>
+      <body>
+        <h2>Tokens Generated Successfully!</h2>
+        <p>Access Token: {TOKENS['access_token']}</p>
+        <p>Refresh Token: {REFRESH_TOKEN}</p>
+        <p>You can now use the app endpoints with these tokens.</p>
+      </body>
+    </html>
+    """)
+
+# =====================================================
 # HEALTH CHECK
 # =====================================================
-
 @app.get("/")
 def health():
     return {"status": "Zoho Dependency Mapping Tool Running"}
@@ -74,14 +188,12 @@ def health():
 # =====================================================
 # LIST EXISTING DEPENDENCY MAPPINGS
 # =====================================================
-
 @app.get("/mappings")
 def list_mappings(layoutId: Optional[str] = Query(None)):
-    url = f"{ZOHO_BASE_URL}/dependencyMappings"
+    url = "https://desk.zoho.com/api/v1/dependencyMappings"
     if layoutId:
         url += f"?layoutId={layoutId}"
-
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=get_headers())
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
@@ -89,11 +201,10 @@ def list_mappings(layoutId: Optional[str] = Query(None)):
 # =====================================================
 # GET AVAILABLE PARENT/CHILD FIELDS
 # =====================================================
-
 @app.get("/available-fields")
 def available_fields(layoutId: str = Query(...)):
-    url = f"{ZOHO_BASE_URL}/availableDependencyMappings?layoutId={layoutId}"
-    response = requests.get(url, headers=HEADERS)
+    url = f"https://desk.zoho.com/api/v1/availableDependencyMappings?layoutId={layoutId}"
+    response = requests.get(url, headers=get_headers())
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
@@ -101,7 +212,6 @@ def available_fields(layoutId: str = Query(...)):
 # =====================================================
 # CREATE DEPENDENCY MAPPING (Excel or JSON)
 # =====================================================
-
 @app.post("/upload")
 async def upload_dependency(
     layoutId: str = Query(...),
@@ -114,8 +224,9 @@ async def upload_dependency(
 
     # ---------- Parse JSON ----------
     if json_data:
+        import json as js
         try:
-            dependency_map = json.loads(json_data)
+            dependency_map = js.loads(json_data)
             if not isinstance(dependency_map, dict):
                 raise ValueError()
         except Exception:
@@ -164,7 +275,7 @@ async def upload_dependency(
         "mappings": dependency_map
     }
 
-    response = requests.post(f"{ZOHO_BASE_URL}/dependencyMappings", headers=HEADERS, json=payload)
+    response = requests.post("https://desk.zoho.com/api/v1/dependencyMappings", headers=get_headers(), json=payload)
     if response.status_code not in [200, 201]:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
@@ -176,11 +287,10 @@ async def upload_dependency(
 # =====================================================
 # UPDATE DEPENDENCY MAPPING
 # =====================================================
-
 @app.patch("/mappings/{mapping_id}")
 def update_mapping(mapping_id: str, mappings: dict):
-    url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
-    response = requests.patch(url, headers=HEADERS, json={"mappings": mappings})
+    url = f"https://desk.zoho.com/api/v1/dependencyMappings/{mapping_id}"
+    response = requests.patch(url, headers=get_headers(), json={"mappings": mappings})
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
@@ -188,11 +298,10 @@ def update_mapping(mapping_id: str, mappings: dict):
 # =====================================================
 # DELETE DEPENDENCY MAPPING
 # =====================================================
-
 @app.delete("/mappings/{mapping_id}")
 def delete_mapping(mapping_id: str):
-    url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
-    response = requests.delete(url, headers=HEADERS)
+    url = f"https://desk.zoho.com/api/v1/dependencyMappings/{mapping_id}"
+    response = requests.delete(url, headers=get_headers())
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return {"message": "Dependency Mapping Deleted Successfully"}
