@@ -18,6 +18,7 @@ app = FastAPI(
     contact={"name": "Prem IzaX", "url": "https://instagram.com/_izax._.prem_"}
 )
 
+
 # =====================================================
 # Override openapi endpoint to remove "openapi" key
 # =====================================================
