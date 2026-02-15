@@ -1,38 +1,77 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form
-import pandas as pd
-import requests
-import os
-import json
-from io import BytesIO
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from typing import Optional
+import requests
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 
+from app import upload
+from app.config import CREDENTIALS, ZOHO_BASE_URL
+
 app = FastAPI(title="Zoho Dependency Mapping Tool")
 
-# =====================================================
-# CONFIGURATION
-# =====================================================
-
-ZOHO_BASE_URL = "https://desk.zoho.com/api/v1"
-ZOHO_ORG_ID = os.getenv("ZOHO_ORG_ID")
-ZOHO_ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
-
-if not ZOHO_ORG_ID or not ZOHO_ACCESS_TOKEN:
-    raise Exception(
-        "Environment variables ZOHO_ORG_ID and ZOHO_ACCESS_TOKEN must be set."
-    )
-
-HEADERS = {
-    "orgId": ZOHO_ORG_ID,
-    "Authorization": f"Zoho-oauthtoken {ZOHO_ACCESS_TOKEN}",
-    "Content-Type": "application/json"
-}
 
 # =====================================================
-# CUSTOM SWAGGER UI WITH FOOTER
+# Zoho headers helper
 # =====================================================
+def get_zoho_headers():
+    if not CREDENTIALS["orgId"] or not CREDENTIALS["accessToken"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Zoho credentials not configured. Use /auth endpoint first."
+        )
+    return {
+        "orgId": CREDENTIALS["orgId"],
+        "Authorization": f"Zoho-oauthtoken {CREDENTIALS['accessToken']}",
+        "Content-Type": "application/json"
+    }
 
+
+def validate_token(orgId: str, accessToken: str):
+    """
+    Validate Zoho OAuth token immediately by calling a minimal Zoho endpoint.
+    Raises HTTPException if invalid or expired.
+    """
+    headers = {
+        "orgId": orgId,
+        "Authorization": f"Zoho-oauthtoken {accessToken}",
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.get(f"{ZOHO_BASE_URL}/users", headers=headers, timeout=10)
+        if response.status_code == 401:
+            raise HTTPException(status_code=401, detail="OAuth Token is invalid or expired.")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error connecting to Zoho for token validation: {str(e)}")
+
+
+# =====================================================
+# Auth Endpoints
+# =====================================================
+class AuthRequest(BaseModel):
+    orgId: str
+    accessToken: str
+
+
+@app.post("/auth")
+def set_credentials(auth: AuthRequest):
+    # Validate token before storing
+    validate_token(auth.orgId, auth.accessToken)
+
+    # Store credentials only if token is valid
+    CREDENTIALS["orgId"] = auth.orgId
+    CREDENTIALS["accessToken"] = auth.accessToken
+    return {"message": "Credentials stored successfully. Token is valid and will work until it expires."}
+
+
+@app.get("/auth/status")
+def auth_status():
+    return {"status": "Credentials configured" if CREDENTIALS["orgId"] else "Credentials NOT configured"}
+
+
+# =====================================================
+# Custom Swagger UI with footer
+# =====================================================
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
     swagger_ui = get_swagger_ui_html(
@@ -41,7 +80,7 @@ async def custom_swagger_ui_html():
     )
     html_content = f"""
     <!DOCTYPE html>
-    <html lang="en">
+    <html>
     <head>
       {swagger_ui.body.decode('utf-8').split('<body>')[0]}
     </head>
@@ -54,8 +93,7 @@ async def custom_swagger_ui_html():
         font-size:14px; 
         position: fixed; 
         bottom: 0; 
-        width: 100%;
-      ">
+        width: 100%;">
         Developed with ❤️ by Prem
       </footer>
     </body>
@@ -63,136 +101,61 @@ async def custom_swagger_ui_html():
     """
     return HTMLResponse(content=html_content)
 
-# =====================================================
-# HEALTH CHECK
-# =====================================================
 
+# =====================================================
+# Health check
+# =====================================================
 @app.get("/")
 def health():
     return {"status": "Zoho Dependency Mapping Tool Running"}
 
-# =====================================================
-# LIST EXISTING DEPENDENCY MAPPINGS
-# =====================================================
 
+# =====================================================
+# Dependency Mappings Endpoints
+# =====================================================
 @app.get("/mappings")
 def list_mappings(layoutId: Optional[str] = Query(None)):
+    headers = get_zoho_headers()
     url = f"{ZOHO_BASE_URL}/dependencyMappings"
     if layoutId:
         url += f"?layoutId={layoutId}"
-
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# =====================================================
-# GET AVAILABLE PARENT/CHILD FIELDS
-# =====================================================
 
 @app.get("/available-fields")
 def available_fields(layoutId: str = Query(...)):
+    headers = get_zoho_headers()
     url = f"{ZOHO_BASE_URL}/availableDependencyMappings?layoutId={layoutId}"
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# =====================================================
-# CREATE DEPENDENCY MAPPING (Excel or JSON)
-# =====================================================
-
-@app.post("/upload")
-async def upload_dependency(
-    layoutId: str = Query(...),
-    parentId: Optional[str] = Query(None),
-    childId: Optional[str] = Query(None),
-    file: Optional[UploadFile] = File(None),
-    json_data: Optional[str] = Form(None),
-):
-    dependency_map = {}
-
-    # ---------- Parse JSON ----------
-    if json_data:
-        try:
-            dependency_map = json.loads(json_data)
-            if not isinstance(dependency_map, dict):
-                raise ValueError()
-        except Exception:
-            raise HTTPException(status_code=400, detail="json_data must be a valid JSON object")
-        if not parentId:
-            parentId = "Parent"
-        if not childId:
-            childId = "Child"
-
-    # ---------- Parse Excel ----------
-    elif file:
-        try:
-            contents = await file.read()
-            df = pd.read_excel(BytesIO(contents))
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid Excel file")
-
-        if df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="Excel must have at least two columns for parent/child")
-
-        parent_column = df.columns[0] if not parentId else parentId
-        child_column = df.columns[1] if not childId else childId
-
-        for _, row in df.iterrows():
-            parent_value = str(row[parent_column]).strip()
-            child_value = str(row[child_column]).strip()
-            if parent_value not in dependency_map:
-                dependency_map[parent_value] = []
-            if child_value not in dependency_map[parent_value]:
-                dependency_map[parent_value].append(child_value)
-
-        if not parentId:
-            parentId = parent_column
-        if not childId:
-            childId = child_column
-    else:
-        raise HTTPException(status_code=400, detail="Provide either Excel file or JSON data")
-
-    if not dependency_map:
-        raise HTTPException(status_code=400, detail="No mappings found in input")
-
-    payload = {
-        "layoutId": layoutId,
-        "parentId": parentId,
-        "childId": childId,
-        "mappings": dependency_map
-    }
-
-    response = requests.post(f"{ZOHO_BASE_URL}/dependencyMappings", headers=HEADERS, json=payload)
-    if response.status_code not in [200, 201]:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-
-    return {
-        "message": "Dependency Mapping Created Successfully",
-        "zoho_response": response.json()
-    }
-
-# =====================================================
-# UPDATE DEPENDENCY MAPPING
-# =====================================================
 
 @app.patch("/mappings/{mapping_id}")
 def update_mapping(mapping_id: str, mappings: dict):
+    headers = get_zoho_headers()
     url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
-    response = requests.patch(url, headers=HEADERS, json={"mappings": mappings})
+    response = requests.patch(url, headers=headers, json={"mappings": mappings})
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# =====================================================
-# DELETE DEPENDENCY MAPPING
-# =====================================================
 
 @app.delete("/mappings/{mapping_id}")
 def delete_mapping(mapping_id: str):
+    headers = get_zoho_headers()
     url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
-    response = requests.delete(url, headers=HEADERS)
+    response = requests.delete(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return {"message": "Dependency Mapping Deleted Successfully"}
+
+
+# =====================================================
+# Include Excel-only upload router
+# =====================================================
+app.include_router(upload.router, prefix="/dependency", tags=["Excel Upload"])
