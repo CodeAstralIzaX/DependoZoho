@@ -1,195 +1,310 @@
-# Zoho Dependency Mapping Tool
+* * *
 
-**Version:** 0.1.0  
-**Backend Only**  
-**FastAPI + Uvicorn + Pandas + Requests**
+Zoho Dependency Mapping API – Full Internal Documentation (with Code)
+=====================================================================
 
-A backend API tool to manage dependency mappings in Zoho Desk via Excel or JSON uploads. Includes endpoints for listing, creating, updating, and deleting dependency mappings.
+**Version:** PI - 0.1.2  
+**Base URL:** `http://127.0.0.1:8000`  
+**Developed by:** [Prem IzaX](https://instagram.com/_izax._.prem_)
 
----
+* * *
 
-## Table of Contents
+Table of Contents
+-----------------
 
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Environment Variables](#environment-variables)
-- [Running the Server](#running-the-server)
-- [API Endpoints](#api-endpoints)
-- [Uploading Mappings](#uploading-mappings)
-- [Notes](#notes)
+1.  API Overview
+    
+2.  Project Structure & Files
+    
+3.  main.py Overview
+    
+4.  upload.py Overview
+    
+5.  config.py Overview
+    
+6.  Endpoints & Usage
+    
+7.  Example Workflow
+    
+8.  Security Considerations
+    
 
----
+* * *
 
-## Features
+1\. API Overview
+----------------
 
-- Health check endpoint
-- List existing dependency mappings
-- Retrieve available parent/child fields
-- Upload dependency mappings via Excel or JSON
-- Update or delete existing mappings
-- Swagger UI with custom footer
+The Zoho Dependency Mapping API provides functionality to:
 
----
+*   Authenticate with Zoho Desk and manage credentials
+    
+*   Validate OAuth tokens
+    
+*   List, update, delete dependency mappings
+    
+*   Upload Excel files for bulk dependency mapping
+    
+*   Check system health and authentication status
+    
 
-## Prerequisites
+This API is built using **FastAPI** and exposes endpoints with **JSON** responses, and also supports **multipart/form-data** for Excel uploads.
 
-- Python 3.9+  
-- Virtual environment recommended
-- Zoho Desk **Org ID** and **Access Token**
+* * *
 
----
+2\. Project Structure & Files
+-----------------------------
 
-## Project Structure
+    MappingTool/
+    │
+    ├─ app/
+    │  ├─ main.py          # FastAPI backend entry point with routes & Swagger customization
+    │  ├─ upload.py        # Router for Excel-based uploads
+    │  ├─ config.py        # Zoho domain config & in-memory credentials
+    │
+    ├─ venv/               # Virtual environment folder
+    ├─ requirements.txt    # Python dependencies
+    └─ README.md           # Internal documentation
+    
 
-```
-MappingTool/
-│
-├─ app/
-│  ├─ __init__.py
-│  └─ main.py        # FastAPI backend code with endpoints
-│
-├─ venv/             # Virtual environment folder
-├─ requirements.txt  # Python dependencies
-└─ README.md         # This file
-```
+> `requirements.txt` must include:
 
-> `main.py` contains all routes and Swagger customization.  
-> `requirements.txt` lists all dependencies, including `python-multipart` for form uploads.
+    fastapi
+    uvicorn
+    requests
+    pandas
+    openpyxl
+    python-multipart
+    
 
----
+* * *
 
-## Installation
+3\. main.py Overview
+--------------------
 
-1. Clone the repository:
+### Key Features:
 
-```bash
-git clone <your-repo-url>
-cd MappingTool
-```
+*   **FastAPI app creation** with custom title, version, description, and contact
+    
+*   **Custom OpenAPI JSON endpoint** (removes default "openapi" key)
+    
+*   **Zoho headers helper** (`get_zoho_headers`) for authenticated requests
+    
+*   **Token validation helper** (`validate_token`) via Zoho /users endpoint
+    
+*   **Auth endpoints:**
+    
+    *   `POST /auth` → Set credentials
+        
+    *   `GET /auth/status` → Check if credentials are configured
+        
+*   **Health endpoint:** `GET /` → Verify server is running
+    
+*   **Dependency mappings endpoints:**
+    
+    *   `GET /mappings` → List mappings
+        
+    *   `GET /available-fields` → Fetch available fields for layout
+        
+    *   `PATCH /mappings/{mapping_id}` → Update a mapping
+        
+    *   `DELETE /mappings/{mapping_id}` → Delete a mapping
+        
+*   **Custom Swagger UI** with footer showing "Developed by Prem IzaX"
+    
+*   **Router inclusion:** Excel uploads routed under `/dependency`
+    
 
-2. Create and activate a virtual environment:
+### Code Snippets:
 
-```bash
-python3 -m venv venv
-source venv/bin/activate   # Linux/Mac
-# OR
-venv\Scripts\activate      # Windows
-```
+**Custom OpenAPI:**
 
-3. Install dependencies:
+    @app.get("/openapi.json", include_in_schema=False)
+    async def custom_openapi():
+        openapi_data = app.openapi()
+        openapi_data.pop("openapi", None)
+        return JSONResponse(content=openapi_data)
+    
 
-```bash
-pip install -r requirements.txt
-```
+**Auth Endpoint:**
 
-> Make sure your `requirements.txt` includes:
+    @app.post("/auth")
+    def set_credentials(auth: AuthRequest):
+        validate_token(auth.orgId, auth.accessToken, domain)
+        CREDENTIALS.update({"orgId": auth.orgId, "accessToken": auth.accessToken, "domain": domain})
+        return {"message": "Credentials stored successfully."}
+    
 
-```
-fastapi
-uvicorn
-requests
-pandas
-openpyxl
-python-multipart
-```
+* * *
 
----
+4\. upload.py Overview
+----------------------
 
-## Environment Variables
+### Features:
 
-Set your Zoho credentials before running the server:
+*   Excel upload endpoint: `POST /dependency/upload`
+    
+*   Reads Excel using **pandas**
+    
+*   Validates at least two columns (`Parent` & `Child`)
+    
+*   Builds a **dependency map** to send to Zoho Desk
+    
+*   Handles errors for invalid Excel files, missing data, or token issues
+    
 
-```bash
-export ZOHO_ORG_ID=<your_zoho_org_id>
-export ZOHO_ACCESS_TOKEN=<your_zoho_access_token>
-```
+**Key Functions:**
 
-> On Windows (PowerShell):
+    def get_zoho_headers() -> Dict[str, str]:
+        ...
+    
+    def validate_token():
+        ...
+    
 
-```powershell
-setx ZOHO_ORG_ID "<your_zoho_org_id>"
-setx ZOHO_ACCESS_TOKEN "<your_zoho_access_token>"
-```
+**Excel Upload Endpoint:**
 
----
+    @router.post("/upload")
+    async def upload_excel(layoutId: str, parentId: Optional[str], childId: Optional[str], file: UploadFile):
+        validate_token()
+        df = pd.read_excel(BytesIO(await file.read()))
+        dependency_map = ...
+        payload = {"layoutId": layoutId, "parentId": parentId, "childId": childId, "mappings": dependency_map}
+        response = requests.post(f"{zoho_base_url}/dependencyMappings", headers=headers, json=payload)
+        return {"status": "success", "records_processed": records_processed, "zoho_response": response.json()}
+    
 
-## Running the Server
+* * *
 
-Run the FastAPI backend with Uvicorn:
+5\. config.py Overview
+----------------------
 
-```bash
-uvicorn app.main:app --reload
-```
+### Purpose:
 
-* The server will start at: `http://127.0.0.1:8000`
-* Swagger UI is available at: `http://127.0.0.1:8000/docs` (with custom footer)
+*   Store **in-memory credentials**
+    
+*   Define **default Zoho domain** and supported domains
+    
+*   Construct **Zoho API base URL** dynamically
+    
 
----
+### Code:
 
-## API Endpoints
+    DEFAULT_ZOHO_DOMAIN = "com"
+    ZOHO_DOMAINS = ["com", "in", "eu", "sa", "cn", "au"]
+    CREDENTIALS = {"orgId": None, "accessToken": None, "domain": DEFAULT_ZOHO_DOMAIN}
+    
+    def get_zoho_base_url(domain: str = None) -> str:
+        domain = domain or DEFAULT_ZOHO_DOMAIN
+        if domain not in ZOHO_DOMAINS:
+            raise ValueError("Unsupported Zoho domain")
+        return f"https://desk.zoho.{domain}/api/v1"
+    
 
-| Method | Endpoint                 | Description                                              |
-| ------ | ------------------------ | -------------------------------------------------------- |
-| GET    | `/`                      | Health check                                             |
-| GET    | `/mappings`              | List all dependency mappings (optional `layoutId` query) |
-| GET    | `/available-fields`      | Get available parent/child fields (`layoutId` required)  |
-| POST   | `/upload`                | Upload dependency mappings via Excel or JSON             |
-| PATCH  | `/mappings/{mapping_id}` | Update existing mapping                                  |
-| DELETE | `/mappings/{mapping_id}` | Delete mapping                                           |
+* * *
 
----
+6\. Endpoints & Usage
+---------------------
 
-## Uploading Mappings
+Endpoint
 
-### Excel File Upload
+Method
 
-* Excel must have **at least 2 columns** (Parent/Child or Category/Subcategory)
-* Required query parameters for Excel upload: `layoutId`, `parentId`, `childId`
-* Example using `curl`:
+Description
 
-```bash
-curl -X POST "http://127.0.0.1:8000/upload?layoutId=<LAYOUT_ID>&parentId=<PARENT_FIELD>&childId=<CHILD_FIELD>" \
--F "file=@mapping.xlsx"
-```
+`/auth`
 
-### JSON Upload
+POST
 
-* Provide JSON in `json_data` form field:
+Set Zoho credentials (orgId, accessToken, domain)
 
-```json
-{
-  "layoutId": "123456",
-  "parentId": "Parent",
-  "childId": "Child",
-  "mappings": {
-    "Parent1": ["Child1", "Child2"],
-    "Parent2": ["Child3"]
-  }
-}
-```
+`/auth/status`
 
-* Example using `curl`:
+GET
 
-```bash
-curl -X POST "http://127.0.0.1:8000/upload" \
--F 'json_data={"layoutId":"123456","parentId":"Parent","childId":"Child","mappings":{"Parent1":["Child1","Child2"]}}'
-```
+Check if credentials are configured
 
----
+`/`
 
-## Notes
+GET
 
-* Make sure `python-multipart` is installed for form uploads.
-* Make sure `openpyxl` is installed for Excel uploads.
-* Swagger UI includes a custom footer showing "Developed with ❤️ by Prem".
-* If port `8000` is in use, you can run on another port:
+Health check
 
-```bash
-uvicorn app.main:app --reload --port 8080
-```
+`/mappings`
 
----
+GET
 
-**From thought to code, with ❤️, by Prem IzaX**
+List dependency mappings; optional `layoutId` query
+
+`/available-fields`
+
+GET
+
+List fields for layout (`layoutId` required)
+
+`/mappings/{mapping_id}`
+
+PATCH
+
+Update a mapping
+
+`/mappings/{mapping_id}`
+
+DELETE
+
+Delete a mapping
+
+`/dependency/upload`
+
+POST
+
+Upload Excel file for bulk dependency mappings
+
+* * *
+
+7\. Example Workflow
+--------------------
+
+1.  Set credentials via `/auth`
+    
+2.  Verify credentials via `/auth/status`
+    
+3.  Fetch available fields `/available-fields?layoutId=`
+    
+4.  Upload Excel `/dependency/upload`
+    
+5.  List mappings `/mappings?layoutId=`
+    
+6.  Update or delete mappings if needed
+    
+
+**Example cURL for Excel Upload:**
+
+    curl -X POST "http://127.0.0.1:8000/dependency/upload?layoutId=12345&parentId=Parent&childId=Child" \
+    -F "file=@mapping.xlsx"
+    
+
+**Example cURL for JSON Upload:**
+
+    curl -X POST "http://127.0.0.1:8000/dependency/upload" \
+    -F 'json_data={"layoutId":"123456","parentId":"Parent","childId":"Child","mappings":{"Parent1":["Child1","Child2"]}}'
+    
+
+* * *
+
+8\. Security Considerations
+---------------------------
+
+*   OAuth tokens must be valid before making requests
+    
+*   Do not expose access tokens in logs or front-end
+    
+*   Use HTTPS for production
+    
+*   Validate all Excel inputs before sending to Zoho
+    
+*   Limit file upload size to prevent abuse
+    
+
+* * *
+
+**From thought to code, with ❤️, by [Prem IzaX](https://instagram.com/_izax._.prem_)**
