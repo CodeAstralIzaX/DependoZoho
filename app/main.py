@@ -105,7 +105,7 @@ async def custom_swagger_ui_html():
 # =====================================================
 # Health check
 # =====================================================
-@app.get("/")
+@app.get("/health")
 def health():
     return {"status": "Zoho Dependency Mapping Tool Running"}
 
