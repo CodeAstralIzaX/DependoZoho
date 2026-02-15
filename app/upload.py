@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 from io import BytesIO
-from app.config import CREDENTIALS, ZOHO_BASE_URL
+from app.config import CREDENTIALS, get_zoho_base_url
 
 router = APIRouter(tags=["Excel Upload"])
 
@@ -24,12 +24,20 @@ def get_zoho_headers() -> Dict[str, str]:
 def validate_token():
     """Validate OAuth token by calling Zoho /users API (safe minimal endpoint)"""
     headers = get_zoho_headers()
+    domain = CREDENTIALS.get("domain", "com")  # Default to .com if not set
+    zoho_base_url = get_zoho_base_url(domain)
     try:
-        response = requests.get(f"{ZOHO_BASE_URL}/users", headers=headers, timeout=10)
+        response = requests.get(f"{zoho_base_url}/users", headers=headers, timeout=10)
         if response.status_code == 401:
-            raise HTTPException(status_code=401, detail="OAuth Token is invalid or expired. Please set /auth with a valid token.")
+            raise HTTPException(
+                status_code=401,
+                detail="OAuth Token is invalid or expired. Please set /auth with a valid token."
+            )
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Error connecting to Zoho for token validation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error connecting to Zoho for token validation: {str(e)}"
+        )
 
 
 @router.post(
@@ -47,6 +55,8 @@ async def upload_excel(
     validate_token()
 
     headers = get_zoho_headers()
+    domain = CREDENTIALS.get("domain", "com")
+    zoho_base_url = get_zoho_base_url(domain)
 
     # ---------- Read Excel ----------
     try:
@@ -89,7 +99,7 @@ async def upload_excel(
     # ---------- Send to Zoho ----------
     try:
         response = requests.post(
-            f"{ZOHO_BASE_URL}/dependencyMappings",
+            f"{zoho_base_url}/dependencyMappings",
             headers=headers,
             json=payload,
             timeout=30

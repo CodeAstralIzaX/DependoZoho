@@ -6,10 +6,9 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 
 from app import upload
-from app.config import CREDENTIALS, ZOHO_BASE_URL
+from app.config import CREDENTIALS, get_zoho_base_url, DEFAULT_ZOHO_DOMAIN, ZOHO_DOMAINS
 
 app = FastAPI(title="Zoho Dependency Mapping Tool")
-
 
 # =====================================================
 # Zoho headers helper
@@ -20,30 +19,38 @@ def get_zoho_headers():
             status_code=400,
             detail="Zoho credentials not configured. Use /auth endpoint first."
         )
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
     return {
         "orgId": CREDENTIALS["orgId"],
         "Authorization": f"Zoho-oauthtoken {CREDENTIALS['accessToken']}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "BASE_URL": zoho_base_url  # optional if needed
     }
 
-
-def validate_token(orgId: str, accessToken: str):
+# =====================================================
+# Token validation helper
+# =====================================================
+def validate_token(orgId: str, accessToken: str, domain: str):
     """
-    Validate Zoho OAuth token immediately by calling a minimal Zoho endpoint.
+    Validate Zoho OAuth token immediately by calling /users endpoint.
     Raises HTTPException if invalid or expired.
     """
+    try:
+        zoho_base_url = get_zoho_base_url(domain)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     headers = {
         "orgId": orgId,
         "Authorization": f"Zoho-oauthtoken {accessToken}",
         "Content-Type": "application/json"
     }
     try:
-        response = requests.get(f"{ZOHO_BASE_URL}/users", headers=headers, timeout=10)
+        response = requests.get(f"{zoho_base_url}/users", headers=headers, timeout=10)
         if response.status_code == 401:
             raise HTTPException(status_code=401, detail="OAuth Token is invalid or expired.")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Error connecting to Zoho for token validation: {str(e)}")
-
 
 # =====================================================
 # Auth Endpoints
@@ -51,23 +58,35 @@ def validate_token(orgId: str, accessToken: str):
 class AuthRequest(BaseModel):
     orgId: str
     accessToken: str
+    domain: Optional[str] = None  # optional, defaults to .com
 
 
 @app.post("/auth")
 def set_credentials(auth: AuthRequest):
+    domain = auth.domain.lower() if auth.domain else DEFAULT_ZOHO_DOMAIN
+
+    # Validate domain
+    if domain not in ZOHO_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported Zoho domain '{domain}'. Supported: {ZOHO_DOMAINS}"
+        )
+
     # Validate token before storing
-    validate_token(auth.orgId, auth.accessToken)
+    validate_token(auth.orgId, auth.accessToken, domain)
 
     # Store credentials only if token is valid
     CREDENTIALS["orgId"] = auth.orgId
     CREDENTIALS["accessToken"] = auth.accessToken
-    return {"message": "Credentials stored successfully. Token is valid and will work until it expires."}
+    CREDENTIALS["domain"] = domain
+
+    return {"message": f"Credentials stored successfully for Zoho domain '{domain}'. Token is valid."}
 
 
 @app.get("/auth/status")
 def auth_status():
-    return {"status": "Credentials configured" if CREDENTIALS["orgId"] else "Credentials NOT configured"}
-
+    return {"status": "Credentials configured" if CREDENTIALS["orgId"] else "Credentials NOT configured",
+            "domain": CREDENTIALS.get("domain")}
 
 # =====================================================
 # Custom Swagger UI with footer
@@ -101,7 +120,6 @@ async def custom_swagger_ui_html():
     """
     return HTMLResponse(content=html_content)
 
-
 # =====================================================
 # Health check
 # =====================================================
@@ -109,14 +127,14 @@ async def custom_swagger_ui_html():
 def health():
     return {"status": "Zoho Dependency Mapping Tool Running"}
 
-
 # =====================================================
 # Dependency Mappings Endpoints
 # =====================================================
 @app.get("/mappings")
 def list_mappings(layoutId: Optional[str] = Query(None)):
     headers = get_zoho_headers()
-    url = f"{ZOHO_BASE_URL}/dependencyMappings"
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+    url = f"{zoho_base_url}/dependencyMappings"
     if layoutId:
         url += f"?layoutId={layoutId}"
     response = requests.get(url, headers=headers)
@@ -128,7 +146,8 @@ def list_mappings(layoutId: Optional[str] = Query(None)):
 @app.get("/available-fields")
 def available_fields(layoutId: str = Query(...)):
     headers = get_zoho_headers()
-    url = f"{ZOHO_BASE_URL}/availableDependencyMappings?layoutId={layoutId}"
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+    url = f"{zoho_base_url}/availableDependencyMappings?layoutId={layoutId}"
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -138,7 +157,8 @@ def available_fields(layoutId: str = Query(...)):
 @app.patch("/mappings/{mapping_id}")
 def update_mapping(mapping_id: str, mappings: dict):
     headers = get_zoho_headers()
-    url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+    url = f"{zoho_base_url}/dependencyMappings/{mapping_id}"
     response = requests.patch(url, headers=headers, json={"mappings": mappings})
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
@@ -148,12 +168,12 @@ def update_mapping(mapping_id: str, mappings: dict):
 @app.delete("/mappings/{mapping_id}")
 def delete_mapping(mapping_id: str):
     headers = get_zoho_headers()
-    url = f"{ZOHO_BASE_URL}/dependencyMappings/{mapping_id}"
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+    url = f"{zoho_base_url}/dependencyMappings/{mapping_id}"
     response = requests.delete(url, headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return {"message": "Dependency Mapping Deleted Successfully"}
-
 
 # =====================================================
 # Include Excel-only upload router
