@@ -1,132 +1,125 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, Form
-from pydantic import BaseModel
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from typing import Dict, List, Optional
 import pandas as pd
 import requests
-import os
 from io import BytesIO
-import json
+from app.config import CREDENTIALS, get_zoho_base_url
 
-router = APIRouter()
+router = APIRouter(tags=["Excel Upload"])
 
-# ==============================
-# CONFIG
-# ==============================
-ZOHO_BASE_URL = "https://desk.zoho.com/api/v1"
-ZOHO_ORG_ID = os.getenv("ZOHO_ORG_ID")
-ZOHO_ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
 
-if not ZOHO_ORG_ID or not ZOHO_ACCESS_TOKEN:
-    raise Exception("ZOHO_ORG_ID and ZOHO_ACCESS_TOKEN must be set.")
+def get_zoho_headers() -> Dict[str, str]:
+    if not CREDENTIALS["orgId"] or not CREDENTIALS["accessToken"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Zoho credentials not configured. Use /auth endpoint first."
+        )
+    return {
+        "orgId": CREDENTIALS["orgId"],
+        "Authorization": f"Zoho-oauthtoken {CREDENTIALS['accessToken']}",
+        "Content-Type": "application/json"
+    }
 
-HEADERS = {
-    "orgId": ZOHO_ORG_ID,
-    "Authorization": f"Zoho-oauthtoken {ZOHO_ACCESS_TOKEN}",
-    "Content-Type": "application/json"
-}
 
-# ==============================
-# Pydantic Model for JSON Upload
-# ==============================
-class UploadJSONRequest(BaseModel):
-    layoutId: str
-    parentId: str
-    childId: str
-    mappings: Dict[str, List[str]]
-
-# ==============================
-# FLEXIBLE UPLOAD ENDPOINT
-# ==============================
-@router.post("/upload")
-async def upload_dependency_mapping(
-    file: Optional[UploadFile] = File(None, description="Excel file containing Category & Subcategory"),
-    layoutId: Optional[str] = Query(None, description="Layout ID (required for Excel)"),
-    parentId: Optional[str] = Query(None, description="Parent Field ID (required for Excel)"),
-    childId: Optional[str] = Query(None, description="Child Field ID (required for Excel)"),
-    json_data: Optional[str] = Form(None, description="JSON payload as string instead of Excel"),
-    json_body: Optional[UploadJSONRequest] = Body(None, description="JSON payload instead of Excel")
-):
-    """
-    Upload dependency mapping via Excel or JSON.
-    - Provide either **file** (Excel) or **json_data/json_body** (JSON)  
-    - Excel must have columns: Category, Subcategory
-    """
-    payload = {}
-
-    # ---------------- Excel Upload ----------------
-    if file:
-        if not (layoutId and parentId and childId):
-            raise HTTPException(status_code=400, detail="layoutId, parentId, and childId are required for Excel upload")
-        try:
-            contents = await file.read()
-            df = pd.read_excel(BytesIO(contents))
-            df.columns = [c.strip().title() for c in df.columns]
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid Excel file")
-
-        required_columns = {"Category", "Subcategory"}
-        if not required_columns.issubset(set(df.columns)):
+def validate_token():
+    """Validate OAuth token by calling Zoho /users API (safe minimal endpoint)"""
+    headers = get_zoho_headers()
+    domain = CREDENTIALS.get("domain", "com")  # Default to .com if not set
+    zoho_base_url = get_zoho_base_url(domain)
+    try:
+        response = requests.get(f"{zoho_base_url}/users", headers=headers, timeout=10)
+        if response.status_code == 401:
             raise HTTPException(
-                status_code=400,
-                detail=f"Excel must contain columns: {required_columns}"
+                status_code=401,
+                detail="OAuth Token is invalid or expired. Please set /auth with a valid token."
             )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error connecting to Zoho for token validation: {str(e)}"
+        )
 
-        dependency_map: Dict[str, List[str]] = {}
-        for _, row in df.iterrows():
-            parent_value = str(row["Category"]).strip()
-            child_value = str(row["Subcategory"]).strip()
-            if parent_value not in dependency_map:
-                dependency_map[parent_value] = []
+
+@router.post(
+    "/upload",
+    summary="Upload Excel for Dependency Mapping",
+    description="Upload an Excel file containing at least two columns (Parent & Child) to create dependency mappings in Zoho Desk."
+)
+async def upload_excel(
+    layoutId: str = Query(..., description="Zoho Layout ID"),
+    parentId: Optional[str] = Query(None, description="Parent Field ID (Optional)"),
+    childId: Optional[str] = Query(None, description="Child Field ID (Optional)"),
+    file: UploadFile = File(..., description="Excel file with Parent and Child values")
+):
+    # ---------- Validate token ----------
+    validate_token()
+
+    headers = get_zoho_headers()
+    domain = CREDENTIALS.get("domain", "com")
+    zoho_base_url = get_zoho_base_url(domain)
+
+    # ---------- Read Excel ----------
+    try:
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Excel file: {str(e)}")
+
+    if df.shape[1] < 2:
+        raise HTTPException(status_code=400, detail="Excel must contain at least 2 columns")
+
+    parent_column = df.columns[0].strip()
+    child_column = df.columns[1].strip()
+
+    df = df.dropna(subset=[parent_column, child_column])
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Excel contains no valid rows")
+
+    dependency_map: Dict[str, List[str]] = {}
+    records_processed = 0
+    for _, row in df.iterrows():
+        parent_value = str(row[parent_column]).strip()
+        child_value = str(row[child_column]).strip()
+        if parent_value and child_value:
+            dependency_map.setdefault(parent_value, [])
             if child_value not in dependency_map[parent_value]:
                 dependency_map[parent_value].append(child_value)
+                records_processed += 1
 
-        if not dependency_map:
-            raise HTTPException(status_code=400, detail="Excel file is empty")
+    parentId = parentId or parent_column
+    childId = childId or child_column
 
-        payload = {
-            "layoutId": layoutId,
-            "parentId": parentId,
-            "childId": childId,
-            "mappings": dependency_map
-        }
-
-    # ---------------- JSON Upload via Form ----------------
-    elif json_data:
-        try:
-            json_dict = json.loads(json_data)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid JSON string in 'json_data'")
-        if not json_dict.get("mappings"):
-            raise HTTPException(status_code=400, detail="Mappings cannot be empty in JSON")
-        payload = {
-            "layoutId": json_dict["layoutId"],
-            "parentId": json_dict["parentId"],
-            "childId": json_dict["childId"],
-            "mappings": json_dict["mappings"]
-        }
-
-    # ---------------- JSON Upload via Body ----------------
-    elif json_body:
-        if not json_body.mappings:
-            raise HTTPException(status_code=400, detail="Mappings cannot be empty in JSON")
-        payload = {
-            "layoutId": json_body.layoutId,
-            "parentId": json_body.parentId,
-            "childId": json_body.childId,
-            "mappings": json_body.mappings
-        }
-
-    else:
-        raise HTTPException(status_code=400, detail="Provide either an Excel file or JSON payload")
+    payload = {
+        "layoutId": layoutId,
+        "parentId": parentId,
+        "childId": childId,
+        "mappings": dependency_map
+    }
 
     # ---------- Send to Zoho ----------
-    url = f"{ZOHO_BASE_URL}/dependencyMappings"
-    response = requests.post(url, headers=HEADERS, json=payload)
+    try:
+        response = requests.post(
+            f"{zoho_base_url}/dependencyMappings",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error connecting to Zoho: {str(e)}")
 
     if response.status_code not in [200, 201]:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={
+                "zoho_status": response.status_code,
+                "zoho_error": response.text,
+                "payload_sent": payload
+            }
+        )
 
     return {
-        "message": "Dependency Mapping Created Successfully",
+        "status": "success",
+        "records_processed": records_processed,
+        "parent_categories": len(dependency_map),
         "zoho_response": response.json()
     }
