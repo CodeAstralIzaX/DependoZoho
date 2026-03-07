@@ -1,0 +1,49 @@
+.layout{
+display:flex;
+height:100vh;
+background:#0f172a;
+color:white;
+font-family:Inter;
+}
+
+.sidebar{
+width:260px;
+background:#020617;
+padding:20px;
+border-right:1px solid #1e293b;
+overflow-y:auto;
+}
+
+.sidebar h2{
+margin-bottom:20px;
+color:#38bdf8;
+}
+
+.sidebar-item{
+padding:10px;
+cursor:pointer;
+border-radius:6px;
+margin-bottom:6px;
+}
+
+.sidebar-item:hover{
+background:#1e293b;
+}
+
+.content{
+flex:1;
+padding:40px;
+overflow-y:auto;
+}
+
+section{
+margin-bottom:60px;
+background:#020617;
+padding:25px;
+border-radius:10px;
+border:1px solid #1e293b;
+}
+
+section h2{
+margin-bottom:15px;
+}

@@ -1,31 +1,48 @@
+# app/main.py - FastAPI for Zoho Dependency Mapping Tool
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import requests
-
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
+
 from app import upload
 from app.config import CREDENTIALS, get_zoho_base_url, DEFAULT_ZOHO_DOMAIN, ZOHO_DOMAINS
 
 # =====================================================
-# FastAPI app with custom title, version, description & contact
+# FastAPI app
 # =====================================================
 app = FastAPI(
     title="Zoho Dependency Mapping API",
     version="PI - 0.1.2",
-    description="Developed by",
+    description="Developed by Prem IzaX",
     contact={"name": "Prem IzaX", "url": "https://instagram.com/_izax._.prem_"}
 )
 
+# =====================================================
+# CORS Middleware
+# =====================================================
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,          # frontend URLs
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =====================================================
-# Override openapi endpoint to remove "openapi" key
+# OpenAPI override
 # =====================================================
 @app.get("/openapi.json", include_in_schema=False)
 async def custom_openapi():
     openapi_data: Dict[str, Any] = app.openapi()
-    openapi_data.pop("openapi", None)  # remove the OpenAPI version field
+    openapi_data.pop("openapi", None)
     return JSONResponse(content=openapi_data)
 
 # =====================================================
@@ -72,12 +89,11 @@ def validate_token(orgId: str, accessToken: str, domain: str):
 class AuthRequest(BaseModel):
     orgId: str
     accessToken: str
-    domain: Optional[str] = None  # optional, defaults to .com
+    domain: Optional[str] = None
 
 @app.post("/auth")
 def set_credentials(auth: AuthRequest):
     domain = auth.domain.lower() if auth.domain else DEFAULT_ZOHO_DOMAIN
-
     if domain not in ZOHO_DOMAINS:
         raise HTTPException(
             status_code=400,
@@ -100,15 +116,11 @@ def auth_status():
     }
 
 # =====================================================
-# Custom Swagger UI with footer (just "Developed by Prem IzaX")
+# Custom Swagger UI
 # =====================================================
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
-    swagger_ui = get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - Swagger UI"
-    )
-
+    swagger_ui = get_swagger_ui_html(openapi_url=app.openapi_url, title=app.title + " - PI")
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -140,7 +152,7 @@ def health():
     return {"status": "Zoho Dependency Mapping Tool Running"}
 
 # =====================================================
-# Dependency Mappings Endpoints
+# Dependency Mapping Endpoints
 # =====================================================
 @app.get("/mappings")
 def list_mappings(layoutId: Optional[str] = Query(None)):
@@ -174,6 +186,50 @@ def update_mapping(mapping_id: str, mappings: dict):
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
+# =====================================================
+# Create dependency mapping
+# =====================================================
+class MappingRequest(BaseModel):
+    layoutId: str
+    parentId: str
+    childId: str
+    mappings: dict
+
+@app.get("/mappings/{mapping_id}")
+def get_mapping(mapping_id: str):
+
+    headers = get_zoho_headers()
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+
+    url = f"{zoho_base_url}/dependencyMappings/{mapping_id}"
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
+
+    return response.json()
+
+
+@app.post("/mappings")
+def create_mapping(mapping: MappingRequest):
+    headers = get_zoho_headers()
+    zoho_base_url = get_zoho_base_url(CREDENTIALS.get("domain"))
+    url = f"{zoho_base_url}/dependencyMappings"
+    payload = {
+        "layoutId": mapping.layoutId,
+        "parentId": mapping.parentId,
+        "childId": mapping.childId,
+        "mappings": mapping.mappings
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code not in [200, 201]:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return response.json()
+
 @app.delete("/mappings/{mapping_id}")
 def delete_mapping(mapping_id: str):
     headers = get_zoho_headers()
@@ -185,6 +241,6 @@ def delete_mapping(mapping_id: str):
     return {"message": "Dependency Mapping Deleted Successfully"}
 
 # =====================================================
-# Include Excel-only upload router
+# Include Excel upload router
 # =====================================================
 app.include_router(upload.router, prefix="/dependency", tags=["Excel Upload"])
