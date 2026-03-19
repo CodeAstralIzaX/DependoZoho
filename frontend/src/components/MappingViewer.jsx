@@ -1,12 +1,12 @@
 import { Card, Input, Button, Table, Tag, message, Popconfirm, Divider, Select, Alert, Space, Modal } from "antd"
 import { useState, useEffect, useCallback } from "react"
-import { fetchMappings, deleteMapping, fetchLayoutFields, createMapping, updateMapping } from "../services/zohoApi"
+import { fetchMappings, deleteMapping, fetchLayoutFields, createMapping, updateMapping, fetchLayouts } from "../services/zohoApi"
 import { useAppContext } from "../context/AppContext"
 import { ExclamationCircleOutlined } from "@ant-design/icons"
 
 function MappingViewer() {
 
-  const { selectedLayout, selectedDepartment, mappingDraft, saveMappingDraft, clearMappingDraft, layouts } = useAppContext()
+  const { selectedLayout, selectedDepartment, mappingDraft, saveMappingDraft, clearMappingDraft, layouts, departments } = useAppContext()
   
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
@@ -28,7 +28,9 @@ function MappingViewer() {
   =============================== */
   const [cloneMappingVisible, setCloneMappingVisible] = useState(false)
   const [cloneSourceMapping, setCloneSourceMapping] = useState(null)
+  const [cloneTargetDepartment, setCloneTargetDepartment] = useState("") // New: target department
   const [cloneTargetLayout, setCloneTargetLayout] = useState("") // New: target layout selection
+  const [cloneTargetLayouts, setCloneTargetLayouts] = useState([]) // New: layouts from target department
   const [cloneNewParent, setCloneNewParent] = useState("")
   const [cloneNewChild, setCloneNewChild] = useState("")
   const [cloneSchemasLoaded, setCloneSchemasLoaded] = useState(false)
@@ -158,8 +160,8 @@ function MappingViewer() {
   }
 
   const cloneMapping = async () => {
-    if (!cloneTargetLayout) {
-      message.warning("Select a target layout")
+    if (!cloneTargetDepartment || !cloneTargetLayout) {
+      message.warning("Select both target department and layout")
       return
     }
 
@@ -179,6 +181,7 @@ function MappingViewer() {
       
       setCloneMappingVisible(false)
       setCloneSourceMapping(null)
+      setCloneTargetDepartment("")
       setCloneTargetLayout("")
       
       await load()
@@ -664,50 +667,106 @@ function MappingViewer() {
 
       {/* Clone Mapping Modal */}
       <Modal
-        title="Clone Mapping to Another Layout"
+        title="Clone Mapping Across Departments & Layouts"
         open={cloneMappingVisible}
         onCancel={() => {
           setCloneMappingVisible(false)
           setCloneSourceMapping(null)
+          setCloneTargetDepartment("")
           setCloneTargetLayout("")
+          setCloneTargetLayouts([])
         }}
         onOk={cloneMapping}
         okText="Clone"
-        okButtonProps={{ loading, disabled: !cloneTargetLayout }}
+        okButtonProps={{ loading, disabled: !cloneTargetDepartment || !cloneTargetLayout }}
         width={600}
       >
         <div style={{ marginBottom: 20 }}>
           <Alert
             title="Clone Mapping"
-            description={`Clone the mapping from "${cloneSourceMapping?.parent?.displayLabel || 'Unknown'}" → "${cloneSourceMapping?.child?.displayLabel || 'Unknown'}" to a different layout.`}
+            description={`Clone the mapping from "${cloneSourceMapping?.parent?.displayLabel || 'Unknown'}" → "${cloneSourceMapping?.child?.displayLabel || 'Unknown'}" to any layout across departments.`}
             type="info"
             showIcon
           />
         </div>
 
-        {/* Select Target Layout */}
+        {/* Step 1: Select Target Department */}
         <div style={{ marginBottom: 20 }}>
-          <p style={{ marginBottom: 12, fontWeight: 500 }}>Select Target Layout *</p>
+          <p style={{ marginBottom: 12, fontWeight: 500 }}>Step 1: Select Target Department *</p>
           <Select
-            placeholder="Choose a different layout to clone to"
-            value={cloneTargetLayout || undefined}
-            onChange={(layoutId) => {
-              setCloneTargetLayout(layoutId)
+            placeholder="Choose a department"
+            value={cloneTargetDepartment || undefined}
+            onChange={async (deptId) => {
+              setCloneTargetDepartment(deptId)
+              setCloneTargetLayout("")
+              setCloneTargetLayouts([])
+              
+              // Get layouts for selected department
+              try {
+                if (deptId === selectedDepartment?.id) {
+                  // Same department - use current layouts
+                  setCloneTargetLayouts(layouts)
+                } else {
+                  // Different department - fetch from API
+                  const res = await fetchLayouts("tickets", deptId, "active", 200, 0)
+                  if (res.data?.data) {
+                    setCloneTargetLayouts(res.data.data)
+                  } else {
+                    message.warning("No layouts found in this department")
+                    setCloneTargetLayouts([])
+                  }
+                }
+              } catch (err) {
+                message.error(`Failed to fetch layouts: ${err.message}`)
+                setCloneTargetLayouts([])
+              }
             }}
-            options={layouts
-              .filter(l => l.id !== selectedLayout?.id) // Exclude current layout
-              .map(l => ({ 
-                label: l.layoutName || l.layoutDisplayName, 
-                value: l.id 
-              }))}
+            options={departments.map(d => ({ 
+              label: d.name, 
+              value: d.id 
+            }))}
             style={{ width: "100%" }}
           />
-          {cloneTargetLayout && layouts.find(l => l.id === cloneTargetLayout) && (
+          {cloneTargetDepartment && (
             <div style={{ marginTop: 8, padding: "8px 12px", background: "#f6ffed", borderRadius: "4px" }}>
-              <strong style={{ color: "#52c41a" }}>✓ Selected:</strong> {layouts.find(l => l.id === cloneTargetLayout)?.layoutName || layouts.find(l => l.id === cloneTargetLayout)?.layoutDisplayName}
+              <strong style={{ color: "#52c41a" }}>✓ Selected:</strong> {departments.find(d => d.id === cloneTargetDepartment)?.name}
             </div>
           )}
         </div>
+
+        {/* Step 2: Select Target Layout */}
+        {cloneTargetDepartment && (
+          <div style={{ marginBottom: 20 }}>
+            <p style={{ marginBottom: 12, fontWeight: 500 }}>Step 2: Select Target Layout *</p>
+            {cloneTargetLayouts.length === 0 ? (
+              <div style={{ padding: "12px", background: "#fffbe6", border: "1px solid #ffe58f", borderRadius: "4px", color: "#8c6c00" }}>
+                No layouts available for this department yet. Make sure the department has layouts configured.
+              </div>
+            ) : (
+              <>
+                <Select
+                  placeholder="Choose a layout in the target department"
+                  value={cloneTargetLayout || undefined}
+                  onChange={(layoutId) => {
+                    setCloneTargetLayout(layoutId)
+                  }}
+                  options={cloneTargetLayouts
+                    .filter(l => !(cloneTargetDepartment === selectedDepartment?.id && l.id === selectedLayout?.id))
+                    .map(l => ({ 
+                      label: l.layoutName || l.layoutDisplayName, 
+                      value: l.id 
+                    }))}
+                  style={{ width: "100%" }}
+                />
+                {cloneTargetLayout && (
+                  <div style={{ marginTop: 8, padding: "8px 12px", background: "#f6ffed", borderRadius: "4px" }}>
+                    <strong style={{ color: "#52c41a" }}>✓ Selected:</strong> {cloneTargetLayouts.find(l => l.id === cloneTargetLayout)?.layoutName || cloneTargetLayouts.find(l => l.id === cloneTargetLayout)?.layoutDisplayName}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         <div style={{ marginBottom: 20, padding: "12px", background: "#f0f8ff", borderRadius: "4px" }}>
           <p style={{ marginBottom: 12, fontWeight: 500 }}>Source Mapping Details</p>
@@ -740,7 +799,7 @@ function MappingViewer() {
 
         <Alert
           title="Note"
-          description="After cloning, you can edit the parent and child field mappings directly in the target layout if needed."
+          description="The same parent and child fields will be used in the target layout. If the target layout doesn't have these fields, cloning will fail."
           type="warning"
           showIcon
           style={{ marginTop: 16 }}
