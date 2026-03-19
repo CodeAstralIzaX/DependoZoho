@@ -42,10 +42,10 @@ function Sidebar(){
   }
 
   const menuItems = [
-    { label: "1. Authentication", id: "auth" },
-    { label: "2. Select Department & Layout", id: "dept-layout" },
-    { label: "3. Create Mappings", id: "excel" },
-    { label: "4. Edit Mappings", id: "mappings" },
+    { label: "Authentication", id: "auth" },
+    { label: "Select Department & Layout", id: "dept-layout" },
+    { label: "Create Mappings", id: "excel" },
+    { label: "Edit Mappings", id: "mappings" },
     { label: "API Console", id: "console" },
     { label: "Layout Field Fetcher", id: "layout-fields" },
     { label: "Dependency Builder", id: "available-fields" },
