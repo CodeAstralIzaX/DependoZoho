@@ -1,5 +1,6 @@
 import Sidebar from "../components/Sidebar"
 import AuthPanel from "../components/AuthPanel"
+import DepartmentLayoutSelector from "../components/DepartmentLayoutSelector"
 import ExcelUploader from "../components/ExcelUploader"
 import MappingViewer from "../components/MappingViewer"
 import ApiConsole from "../components/ApiConsole"
@@ -29,12 +30,34 @@ function Dashboard(){
 
       <div style={contentStyle}>
 
-        <AuthPanel/>
-        <ExcelUploader/>
-        <MappingViewer/>
-        <ApiConsole/>
-        <LayoutFieldFetcher/>
-        <AvailableFields/>
+        <div id="auth">
+          <AuthPanel/>
+        </div>
+
+        <div id="dept-layout">
+          <DepartmentLayoutSelector/>
+        </div>
+
+        <div id="excel">
+          <ExcelUploader/>
+        </div>
+
+        <div id="mappings">
+          <MappingViewer/>
+        </div>
+
+        <div id="console">
+          <ApiConsole/>
+        </div>
+
+        <div id="layout-fields">
+          <LayoutFieldFetcher/>
+        </div>
+
+        <div id="available-fields">
+          <AvailableFields/>
+        </div>
+
         <Footer/>
 
       </div>
